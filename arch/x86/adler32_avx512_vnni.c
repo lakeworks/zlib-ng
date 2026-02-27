@@ -156,57 +156,75 @@ rem_peel_copy:
         len -= k;
         __m256i vs1_0 = vs1;
         __m256i vs3 = _mm256_setzero_si256();
-        /* We might get a tad bit more ILP here if we sum to a second register in the loop */
+        /* 4 independent dpbusd accumulator chains to saturate Zen 5's 2-cycle
+         * VPDPBUSD latency across 2 execution ports (0,1) */
         __m256i vs2_1 = _mm256_setzero_si256();
-        __m256i vbuf0, vbuf1;
+        __m256i vs2_2 = _mm256_setzero_si256();
+        __m256i vs2_3 = _mm256_setzero_si256();
+        __m256i vbuf0, vbuf1, vbuf2, vbuf3;
 
-        /* Remainder peeling */
-        if (k % 64) {
-            vbuf1 = _mm256_loadu_si256((__m256i*)src);
-            _mm256_storeu_si256((__m256i*)dst, vbuf1);
+        /* Remainder peeling: process up to 3 chunks to align to 128B boundary */
+        while (k >= 32 && k % 128) {
+            vbuf0 = _mm256_loadu_si256((__m256i*)src);
+            _mm256_storeu_si256((__m256i*)dst, vbuf0);
             dst += 32;
-
             src += 32;
             k -= 32;
 
-            __m256i vs1_sad = _mm256_sad_epu8(vbuf1, zero);
-            vs1 = _mm256_add_epi32(vs1, vs1_sad);
+            __m256i vs1_sad = _mm256_sad_epu8(vbuf0, zero);
             vs3 = _mm256_add_epi32(vs3, vs1_0);
-            vs2 = _mm256_dpbusd_epi32(vs2, vbuf1, dot2v);
+            vs1 = _mm256_add_epi32(vs1, vs1_sad);
+            vs2 = _mm256_dpbusd_epi32(vs2, vbuf0, dot2v);
             vs1_0 = vs1;
         }
 
-        /* Manually unrolled this loop by 2 for an decent amount of ILP */
-        while (k >= 64) {
-            /*
-               vs1 = adler + sum(c[i])
-               vs2 = sum2 + 64 vs1 + sum( (64-i+1) c[i] )
-            */
+        /* 4-way unrolled loop: 128 bytes per iteration.
+         * 4 independent dpbusd chains hide the 2-cycle latency on Zen 5. */
+        while (k >= 128) {
             vbuf0 = _mm256_loadu_si256((__m256i*)src);
             vbuf1 = _mm256_loadu_si256((__m256i*)(src + 32));
+            vbuf2 = _mm256_loadu_si256((__m256i*)(src + 64));
+            vbuf3 = _mm256_loadu_si256((__m256i*)(src + 96));
             _mm256_storeu_si256((__m256i*)dst, vbuf0);
             _mm256_storeu_si256((__m256i*)(dst + 32), vbuf1);
-            dst += 64;
-            src += 64;
-            k -= 64;
+            _mm256_storeu_si256((__m256i*)(dst + 64), vbuf2);
+            _mm256_storeu_si256((__m256i*)(dst + 96), vbuf3);
+            dst += 128;
+            src += 128;
+            k -= 128;
 
+            /* chunk 0 */
             __m256i vs1_sad = _mm256_sad_epu8(vbuf0, zero);
-            vs1 = _mm256_add_epi32(vs1, vs1_sad);
             vs3 = _mm256_add_epi32(vs3, vs1_0);
-            /* multiply-add, resulting in 16 ints. Fuse with sum stage from prior versions, as we now have the dp
-             * instructions to eliminate them */
+            vs1 = _mm256_add_epi32(vs1, vs1_sad);
             vs2 = _mm256_dpbusd_epi32(vs2, vbuf0, dot2v);
 
-            vs3 = _mm256_add_epi32(vs3, vs1);
+            /* chunk 1 */
             vs1_sad = _mm256_sad_epu8(vbuf1, zero);
+            vs3 = _mm256_add_epi32(vs3, vs1);
             vs1 = _mm256_add_epi32(vs1, vs1_sad);
             vs2_1 = _mm256_dpbusd_epi32(vs2_1, vbuf1, dot2v);
+
+            /* chunk 2 */
+            vs1_sad = _mm256_sad_epu8(vbuf2, zero);
+            vs3 = _mm256_add_epi32(vs3, vs1);
+            vs1 = _mm256_add_epi32(vs1, vs1_sad);
+            vs2_2 = _mm256_dpbusd_epi32(vs2_2, vbuf2, dot2v);
+
+            /* chunk 3 */
+            vs1_sad = _mm256_sad_epu8(vbuf3, zero);
+            vs3 = _mm256_add_epi32(vs3, vs1);
+            vs1 = _mm256_add_epi32(vs1, vs1_sad);
+            vs2_3 = _mm256_dpbusd_epi32(vs2_3, vbuf3, dot2v);
+
             vs1_0 = vs1;
         }
 
         vs3 = _mm256_slli_epi32(vs3, 5);
         vs2 = _mm256_add_epi32(vs2, vs3);
         vs2 = _mm256_add_epi32(vs2, vs2_1);
+        vs2 = _mm256_add_epi32(vs2, vs2_2);
+        vs2 = _mm256_add_epi32(vs2, vs2_3);
 
         adler0 = partial_hsum256(vs1) % BASE;
         adler1 = hsum256(vs2) % BASE;
