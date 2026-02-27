@@ -62,6 +62,7 @@ uint32_t adler32_avx512(uint32_t adler, const uint8_t *buf, size_t len);
 uint32_t adler32_fold_copy_avx512(uint32_t adler, uint8_t *dst, const uint8_t *src, size_t len);
 uint8_t* chunkmemset_safe_avx512(uint8_t *out, uint8_t *from, unsigned len, unsigned left);
 void inflate_fast_avx512(PREFIX3(stream)* strm, uint32_t start);
+void slide_hash_avx512(deflate_state *s);
 #  ifdef HAVE_BUILTIN_CTZLL
     uint32_t compare256_avx512(const uint8_t *src0, const uint8_t *src1);
     uint32_t longest_match_avx512(deflate_state *const s, Pos cur_match);
@@ -173,6 +174,8 @@ uint32_t crc32_vpclmulqdq(uint32_t crc32, const uint8_t *buf, size_t len);
 #    define native_chunkmemset_safe chunkmemset_safe_avx512
 #    undef native_inflate_fast
 #    define native_inflate_fast inflate_fast_avx512
+#    undef native_slide_hash
+#    define native_slide_hash slide_hash_avx512
 #    ifdef HAVE_BUILTIN_CTZLL
 #      undef native_compare256
 #      define native_compare256 compare256_avx512

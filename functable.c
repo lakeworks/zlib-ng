@@ -193,6 +193,7 @@ static int init_functable(void) {
         ft.adler32_fold_copy = &adler32_fold_copy_avx512;
         ft.chunkmemset_safe = &chunkmemset_safe_avx512;
         ft.inflate_fast = &inflate_fast_avx512;
+        ft.slide_hash = &slide_hash_avx512;
 #  ifdef HAVE_BUILTIN_CTZLL
         ft.compare256 = &compare256_avx512;
         ft.longest_match = &longest_match_avx512;

@@ -48,52 +48,67 @@ rem_peel:
         len -= k;
         __m512i vs1_0 = vs1;
         __m512i vs3 = _mm512_setzero_si512();
-        /* We might get a tad bit more ILP here if we sum to a second register in the loop */
+        /* 4 independent dpbusd accumulator chains to saturate Zen 5's 2-cycle
+         * VPDPBUSD latency across 2 execution ports (0,1) */
         __m512i vs2_1 = _mm512_setzero_si512();
-        __m512i vbuf0, vbuf1;
+        __m512i vs2_2 = _mm512_setzero_si512();
+        __m512i vs2_3 = _mm512_setzero_si512();
 
-        /* Remainder peeling */
-        if (k % 128) {
-            vbuf1 = _mm512_loadu_si512((__m512i*)src);
-
+        /* Remainder peeling: process up to 3 chunks to align to 256B boundary */
+        while (k >= 64 && k % 256) {
+            __m512i vbuf = _mm512_loadu_si512((__m512i*)src);
             src += 64;
             k -= 64;
 
-            __m512i vs1_sad = _mm512_sad_epu8(vbuf1, zero);
-            vs1 = _mm512_add_epi32(vs1, vs1_sad);
+            __m512i vs1_sad = _mm512_sad_epu8(vbuf, zero);
             vs3 = _mm512_add_epi32(vs3, vs1_0);
-            vs2 = _mm512_dpbusd_epi32(vs2, vbuf1, dot2v);
+            vs1 = _mm512_add_epi32(vs1, vs1_sad);
+            vs2 = _mm512_dpbusd_epi32(vs2, vbuf, dot2v);
             vs1_0 = vs1;
         }
 
-        /* Manually unrolled this loop by 2 for an decent amount of ILP */
-        while (k >= 128) {
-            /*
-               vs1 = adler + sum(c[i])
-               vs2 = sum2 + 64 vs1 + sum( (64-i+1) c[i] )
-            */
-            vbuf0 = _mm512_loadu_si512((__m512i*)src);
-            vbuf1 = _mm512_loadu_si512((__m512i*)(src + 64));
-            src += 128;
-            k -= 128;
+        /* 4-way unrolled loop: 256 bytes per iteration.
+         * 4 independent dpbusd chains hide the 2-cycle latency on Zen 5. */
+        while (k >= 256) {
+            __m512i vbuf0 = _mm512_loadu_si512((__m512i*)src);
+            __m512i vbuf1 = _mm512_loadu_si512((__m512i*)(src + 64));
+            __m512i vbuf2 = _mm512_loadu_si512((__m512i*)(src + 128));
+            __m512i vbuf3 = _mm512_loadu_si512((__m512i*)(src + 192));
+            src += 256;
+            k -= 256;
 
+            /* chunk 0 */
             __m512i vs1_sad = _mm512_sad_epu8(vbuf0, zero);
-            vs1 = _mm512_add_epi32(vs1, vs1_sad);
             vs3 = _mm512_add_epi32(vs3, vs1_0);
-            /* multiply-add, resulting in 16 ints. Fuse with sum stage from prior versions, as we now have the dp
-             * instructions to eliminate them */
+            vs1 = _mm512_add_epi32(vs1, vs1_sad);
             vs2 = _mm512_dpbusd_epi32(vs2, vbuf0, dot2v);
 
-            vs3 = _mm512_add_epi32(vs3, vs1);
+            /* chunk 1 */
             vs1_sad = _mm512_sad_epu8(vbuf1, zero);
+            vs3 = _mm512_add_epi32(vs3, vs1);
             vs1 = _mm512_add_epi32(vs1, vs1_sad);
             vs2_1 = _mm512_dpbusd_epi32(vs2_1, vbuf1, dot2v);
+
+            /* chunk 2 */
+            vs1_sad = _mm512_sad_epu8(vbuf2, zero);
+            vs3 = _mm512_add_epi32(vs3, vs1);
+            vs1 = _mm512_add_epi32(vs1, vs1_sad);
+            vs2_2 = _mm512_dpbusd_epi32(vs2_2, vbuf2, dot2v);
+
+            /* chunk 3 */
+            vs1_sad = _mm512_sad_epu8(vbuf3, zero);
+            vs3 = _mm512_add_epi32(vs3, vs1);
+            vs1 = _mm512_add_epi32(vs1, vs1_sad);
+            vs2_3 = _mm512_dpbusd_epi32(vs2_3, vbuf3, dot2v);
+
             vs1_0 = vs1;
         }
 
         vs3 = _mm512_slli_epi32(vs3, 6);
         vs2 = _mm512_add_epi32(vs2, vs3);
         vs2 = _mm512_add_epi32(vs2, vs2_1);
+        vs2 = _mm512_add_epi32(vs2, vs2_2);
+        vs2 = _mm512_add_epi32(vs2, vs2_3);
 
         adler0 = partial_hsum(vs1) % BASE;
         adler1 = _mm512_reduce_add_epu32(vs2) % BASE;
